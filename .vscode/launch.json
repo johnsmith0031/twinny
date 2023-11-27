@@ -11,7 +11,7 @@
 			"request": "launch",
 			"args": [
 				"--extensionDevelopmentPath=${workspaceFolder}",
-				"${workspaceFolder}/example"
+				"${workspaceFolder}/example.ipynb"
 			],
 			"outFiles": [
 				"${workspaceFolder}/dist/**/*.js"

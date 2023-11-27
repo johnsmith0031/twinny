@@ -32,6 +32,7 @@ export class CompletionProvider implements InlineCompletionItemProvider {
   private _usePreviousContext = this._config.get('usePreviousContext')
   private _basePath = `${this._serverPath}/${this._engine}`
   private _openai: OpenAIApi = new OpenAIApi(this._openaiConfig, this._basePath)
+  private _is_debugging: boolean = false
 
   constructor(statusBar: StatusBarItem) {
     this._statusBar = statusBar
@@ -46,6 +47,10 @@ export class CompletionProvider implements InlineCompletionItemProvider {
     if (!editor) {
       return
     }
+
+    if (this._debounceWait === 0) {
+      return
+    } // don't debounce if debounceWait is 0
 
     const line = editor.document.lineAt(position.line)
 
@@ -65,8 +70,51 @@ export class CompletionProvider implements InlineCompletionItemProvider {
       this._debouncer = setTimeout(async () => {
         if (!this._config.get('enabled'))
           return resolve([] as InlineCompletionItem[])
+        
+        let prompt = undefined
 
-        const prompt = this.getPrompt(document, position)
+        // Check if document is jupyter notebook
+        console.debug(document.fileName)
+        if (document.fileName.endsWith('.ipynb')) {
+          // get active notebook
+          const notebook = window.activeNotebookEditor?.notebook
+
+          // get all cells
+          const cells = notebook?.getCells()
+          if (!cells) return resolve([] as InlineCompletionItem[])
+
+          const current_cell_index = cells.findIndex(cell => cell.document.uri === document.uri)
+          
+          // get all cell content
+          const cell_content = cells?.map(cell => cell.document.getText())
+
+          // get all cell content before current cell
+          let cell_content_before_string = ''
+          console.debug(current_cell_index)
+          if (current_cell_index > 0) {
+            const cell_content_before = cell_content?.slice(0, current_cell_index)
+            cell_content_before_string = cell_content_before?.join('\n')
+          }
+          
+          let { prefix, suffix } = this.getContext(document, position) // will have bug if rows of current cells are longer than contextLength
+          prefix = cell_content_before_string + '\n' + prefix
+
+          // get all cell content after current cell
+          const cell_length = cells.length
+          let cell_content_after_string = ''
+          if (current_cell_index < cell_length - 1) {
+            const cell_content_after = cell_content?.slice(current_cell_index + 1, cell_length)
+            cell_content_after_string = cell_content_after?.join('\n')
+          }
+          suffix = suffix + '\n' + cell_content_after_string
+
+          prompt = this._getPrompt(prefix, suffix)
+          if (this._is_debugging) console.debug(prompt)
+        }
+        else{
+          prompt = this.getPrompt(document, position)
+          if (this._is_debugging) console.debug(prompt)
+        }
 
         if (!prompt) return resolve([] as InlineCompletionItem[])
 
@@ -98,14 +146,18 @@ export class CompletionProvider implements InlineCompletionItemProvider {
       }, this._debounceWait as number)
     })
   }
-
-  private getPrompt(document: TextDocument, position: Position) {
-    const { prefix, suffix } = this.getContext(document, position)
+  
+  private _getPrompt(prefix: string, suffix: string) {
     const prompt = `
       ${this._usePreviousContext ? `${this._lineContexts.join('\n')}\n` : ''}
       ${prefix}<FILL_HERE>${suffix}
     `
     return prompt
+  }
+
+  private getPrompt(document: TextDocument, position: Position) {
+    const { prefix, suffix } = this.getContext(document, position)
+    return this._getPrompt(prefix, suffix)
   }
 
   private registerOnChangeContextListener() {
