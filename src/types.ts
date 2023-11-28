@@ -7,3 +7,5 @@ export type CompletionRequest = CreateCompletionRequest & {
   repetition_penalty: number | undefined
   num_return_sequences: number | undefined
 }
+
+export const FILL_SPLIT_STR = '<FILL_HERE>';

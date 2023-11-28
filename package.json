@@ -2,7 +2,7 @@
   "name": "twinny",
   "displayName": "twinny",
   "description": "Locally hosted AI code completion plugin for vscode",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "icon": "assets/icon.png",
   "keywords": [
     "code-inference",
@@ -47,16 +47,23 @@
         "shortTitle": "Disable twinny"
       }
     ],
+    "keybindings": [
+      {
+        "command": "editor.action.inlineSuggest.trigger",
+        "key": "alt+\\",
+        "when": "config.twinny.enabled && !inlineSuggestionVisible && editorTextFocus && !editorReadonly"
+      }
+    ],
     "configuration": {
       "title": "twinny",
       "properties": {
         "twinny.contextLength": {
           "type": "number",
-          "default": 500
+          "default": 2048
         },
         "twinny.debounceWait": {
           "type": "number",
-          "default": 200
+          "default": 500
         },
         "twinny.enabled": {
           "type": "boolean",
@@ -74,6 +81,10 @@
           "type": "boolean",
           "default": true
         },
+        "twinny.triggerWhenEditingLine": {
+          "type": "boolean",
+          "default": true
+        },
         "twinny.maxTime": {
           "type": "number",
           "default": 5
@@ -84,7 +95,7 @@
         },
         "twinny.repetitionPenalty": {
           "type": "number",
-          "default": 1.02
+          "default": 1.05
         },
         "twinny.server": {
           "type": "string",
@@ -92,7 +103,7 @@
         },
         "twinny.temperature": {
           "type": "number",
-          "default": 0.1
+          "default": 0.3
         },
         "twinny.topK": {
           "type": "number",
@@ -100,11 +111,11 @@
         },
         "twinny.topP": {
           "type": "number",
-          "default": 0.95
+          "default": 0.5
         },
         "twinny.usePreviousContext": {
           "type": "boolean",
-          "default": true
+          "default": false
         }
       }
     }

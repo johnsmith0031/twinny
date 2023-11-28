@@ -15,7 +15,7 @@ import {
   StatusBarItem,
   window
 } from 'vscode'
-import { CompletionRequest } from './types'
+import { CompletionRequest, FILL_SPLIT_STR } from './types'
 
 export class CompletionProvider implements InlineCompletionItemProvider {
   private _statusBar: StatusBarItem
@@ -30,6 +30,7 @@ export class CompletionProvider implements InlineCompletionItemProvider {
   private _serverPath = this._config.get('server')
   private _engine = this._config.get('engine')
   private _usePreviousContext = this._config.get('usePreviousContext')
+  private _triggerWhenEditingLine = this._config.get('triggerWhenEditingLine')
   private _basePath = `${this._serverPath}/${this._engine}`
   private _openai: OpenAIApi = new OpenAIApi(this._openaiConfig, this._basePath)
   private _is_debugging: boolean = false
@@ -48,109 +49,115 @@ export class CompletionProvider implements InlineCompletionItemProvider {
       return
     }
 
+    // don't debounce if debounceWait is 0
     if (this._debounceWait === 0) {
       return
-    } // don't debounce if debounceWait is 0
+    } 
 
-    const line = editor.document.lineAt(position.line)
-
-    const charsAfterRange = new Range(editor.selection.start, line.range.end)
-
-    const textAfterCursor = editor.document.getText(charsAfterRange)
-
-    if (textAfterCursor.trim()) {
-      return
+    // If there's a word after the cursor, don't trigger completion.
+    if (!this._triggerWhenEditingLine) {
+      const line = editor.document.lineAt(position.line)
+      const charsAfterRange = new Range(editor.selection.start, line.range.end)
+      const textAfterCursor = editor.document.getText(charsAfterRange)
+      if (textAfterCursor.trim()) {
+        return
+      }
     }
 
+    // Make request to get completion items
     return new Promise((resolve) => {
       if (this._debouncer) {
         clearTimeout(this._debouncer)
       }
 
       this._debouncer = setTimeout(async () => {
-        if (!this._config.get('enabled'))
-          return resolve([] as InlineCompletionItem[])
-        
-        let prompt = undefined
-
-        // Check if document is jupyter notebook
-        console.debug(document.fileName)
-        if (document.fileName.endsWith('.ipynb')) {
-          // get active notebook
-          const notebook = window.activeNotebookEditor?.notebook
-
-          // get all cells
-          const cells = notebook?.getCells()
-          if (!cells) return resolve([] as InlineCompletionItem[])
-
-          const current_cell_index = cells.findIndex(cell => cell.document.uri === document.uri)
-          
-          // get all cell content
-          const cell_content = cells?.map(cell => cell.document.getText())
-
-          // get all cell content before current cell
-          let cell_content_before_string = ''
-          console.debug(current_cell_index)
-          if (current_cell_index > 0) {
-            const cell_content_before = cell_content?.slice(0, current_cell_index)
-            cell_content_before_string = cell_content_before?.join('\n')
-          }
-          
-          let { prefix, suffix } = this.getContext(document, position) // will have bug if rows of current cells are longer than contextLength
-          prefix = cell_content_before_string + '\n' + prefix
-
-          // get all cell content after current cell
-          const cell_length = cells.length
-          let cell_content_after_string = ''
-          if (current_cell_index < cell_length - 1) {
-            const cell_content_after = cell_content?.slice(current_cell_index + 1, cell_length)
-            cell_content_after_string = cell_content_after?.join('\n')
-          }
-          suffix = suffix + '\n' + cell_content_after_string
-
-          prompt = this._getPrompt(prefix, suffix)
-          if (this._is_debugging) console.debug(prompt)
-        }
-        else{
-          prompt = this.getPrompt(document, position)
-          if (this._is_debugging) console.debug(prompt)
-        }
-
-        if (!prompt) return resolve([] as InlineCompletionItem[])
-
-        this._statusBar.tooltip = 'twinny - thinking...'
-        this._statusBar.text = '$(loading~spin)'
-
-        const options: CompletionRequest = {
-          model: '',
-          prompt: prompt as CreateCompletionRequestPrompt,
-          max_time: this._config.get('maxTime'),
-          max_tokens: this._config.get('maxTokens'),
-          num_return_sequences: this._config.get('numReturnSequences'),
-          temperature: this._config.get('temperature'),
-          one_line: this._config.get('oneLine'),
-          top_p: this._config.get('topP'),
-          top_k: this._config.get('topK'),
-          repetition_penalty: this._config.get('repetitionPenalty')
-        }
-
-        try {
-          const { data } = await this._openai.createCompletion(options)
-          this._statusBar.text = '$(code)'
-          this._statusBar.tooltip = 'twinny - Ready'
-          return resolve(this.getInlineCompletions(data, position, document))
-        } catch (error) {
-          this._statusBar.text = '$(alert)'
-          return resolve([] as InlineCompletionItem[])
-        }
+        return this.activateCompletionRequest(resolve, document, position)
       }, this._debounceWait as number)
     })
   }
   
+  private async activateCompletionRequest(resolve: (value: InlineCompletionItem[]) => void, document: TextDocument, position: Position) {
+    if (!this._config.get('enabled'))
+      return resolve([] as InlineCompletionItem[])
+    
+    let prompt = undefined
+
+    // Check if document is jupyter notebook
+    if (this._is_debugging) console.debug(document.fileName)
+    if (document.fileName.endsWith('.ipynb')) {
+      // get active notebook
+      const notebook = window.activeNotebookEditor?.notebook
+
+      // get all cells
+      const cells = notebook?.getCells()
+      if (!cells) return resolve([] as InlineCompletionItem[])
+
+      const current_cell_index = cells.findIndex(cell => cell.document.uri === document.uri)
+      
+      // get all cell content
+      const cell_content = cells?.map(cell => cell.document.getText())
+
+      // get all cell content before current cell
+      let cell_content_before_string = ''
+      if (this._is_debugging) console.debug(current_cell_index)
+      if (current_cell_index > 0) {
+        const cell_content_before = cell_content?.slice(0, current_cell_index)
+        cell_content_before_string = cell_content_before?.join('\n')
+      }
+      
+      let { prefix, suffix } = this.getContext(document, position) // will have bug if rows of current cells are longer than contextLength
+      prefix = cell_content_before_string + '\n' + prefix
+
+      // get all cell content after current cell
+      const cell_length = cells.length
+      let cell_content_after_string = ''
+      if (current_cell_index < cell_length - 1) {
+        const cell_content_after = cell_content?.slice(current_cell_index + 1, cell_length)
+        cell_content_after_string = cell_content_after?.join('\n')
+      }
+      suffix = suffix + '\n' + cell_content_after_string
+
+      prompt = this._getPrompt(prefix, suffix)
+      if (this._is_debugging) console.debug(prompt)
+    }
+    else{
+      prompt = this.getPrompt(document, position)
+      if (this._is_debugging) console.debug(prompt)
+    }
+
+    if (!prompt) return resolve([] as InlineCompletionItem[])
+
+    this._statusBar.tooltip = 'twinny - thinking...'
+    this._statusBar.text = '$(loading~spin)'
+
+    const options: CompletionRequest = {
+      model: '',
+      prompt: prompt as CreateCompletionRequestPrompt,
+      max_time: this._config.get('maxTime'),
+      max_tokens: this._config.get('maxTokens'),
+      num_return_sequences: this._config.get('numReturnSequences'),
+      temperature: this._config.get('temperature'),
+      one_line: this._config.get('oneLine'),
+      top_p: this._config.get('topP'),
+      top_k: this._config.get('topK'),
+      repetition_penalty: this._config.get('repetitionPenalty')
+    }
+
+    try {
+      const { data } = await this._openai.createCompletion(options)
+      this._statusBar.text = '$(code)'
+      this._statusBar.tooltip = 'twinny - Ready'
+      return resolve(this.getInlineCompletions(data, position, document))
+    } catch (error) {
+      this._statusBar.text = '$(alert)'
+      return resolve([] as InlineCompletionItem[])
+    }
+  }
+
   private _getPrompt(prefix: string, suffix: string) {
     const prompt = `
       ${this._usePreviousContext ? `${this._lineContexts.join('\n')}\n` : ''}
-      ${prefix}<FILL_HERE>${suffix}
+      ${prefix}${FILL_SPLIT_STR}${suffix}
     `
     return prompt
   }
@@ -200,7 +207,7 @@ export class CompletionProvider implements InlineCompletionItemProvider {
   ): { prefix: string; suffix: string } {
     const start = Math.max(0, position.line - this._contextLength)
     const prefix = document.getText(
-      new Range(start, 0, position.line, this._contextLength)
+      new Range(start, 0, position.line, position.character)
     )
     const suffix = document.getText(
       new Range(
@@ -255,6 +262,7 @@ export class CompletionProvider implements InlineCompletionItemProvider {
     this._serverPath = this._config.get('server')
     this._engine = this._config.get('engine')
     this._usePreviousContext = this._config.get('_usePreviousContext')
+    this._triggerWhenEditingLine = this._config.get('triggerWhenEditingLine')
 
     this._basePath = `${this._serverPath}/${this._engine}`
     this._openai = new OpenAIApi(this._openaiConfig, this._basePath)
