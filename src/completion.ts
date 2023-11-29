@@ -31,6 +31,7 @@ export class CompletionProvider implements InlineCompletionItemProvider {
   private _engine = this._config.get('engine')
   private _usePreviousContext = this._config.get('usePreviousContext')
   private _triggerWhenEditingLine = this._config.get('triggerWhenEditingLine')
+  private _removeDoubleNewline = this._config.get('removeDoubleNewline')
   private _basePath = `${this._serverPath}/${this._engine}`
   private _openai: OpenAIApi = new OpenAIApi(this._openaiConfig, this._basePath)
   private _is_debugging: boolean = false
@@ -97,25 +98,27 @@ export class CompletionProvider implements InlineCompletionItemProvider {
       // get all cell content
       const cell_content = cells?.map(cell => cell.document.getText())
 
+      const cell_spliter = '\n\n'
+
       // get all cell content before current cell
       let cell_content_before_string = ''
       if (this._is_debugging) console.debug(current_cell_index)
       if (current_cell_index > 0) {
         const cell_content_before = cell_content?.slice(0, current_cell_index)
-        cell_content_before_string = cell_content_before?.join('\n')
+        cell_content_before_string = cell_content_before?.join(cell_spliter)
       }
       
       let { prefix, suffix } = this.getContext(document, position) // will have bug if rows of current cells are longer than contextLength
-      prefix = cell_content_before_string + '\n' + prefix
+      prefix = cell_content_before_string + cell_spliter + prefix
 
       // get all cell content after current cell
       const cell_length = cells.length
       let cell_content_after_string = ''
       if (current_cell_index < cell_length - 1) {
         const cell_content_after = cell_content?.slice(current_cell_index + 1, cell_length)
-        cell_content_after_string = cell_content_after?.join('\n')
+        cell_content_after_string = cell_content_after?.join(cell_spliter)
       }
-      suffix = suffix + '\n' + cell_content_after_string
+      suffix = suffix + cell_spliter + cell_content_after_string
 
       prompt = this._getPrompt(prefix, suffix)
       if (this._is_debugging) console.debug(prompt)
@@ -123,6 +126,15 @@ export class CompletionProvider implements InlineCompletionItemProvider {
     else{
       prompt = this.getPrompt(document, position)
       if (this._is_debugging) console.debug(prompt)
+    }
+
+    // get text after cursor
+    const textAfterCursor = document.getText(
+      new Range(position.line, position.character, position.line, Number.MAX_SAFE_INTEGER)
+    )
+    let one_line_flag = this._config.get('oneLine')
+    if (textAfterCursor && textAfterCursor !== '') {
+      one_line_flag = true
     }
 
     if (!prompt) return resolve([] as InlineCompletionItem[])
@@ -137,7 +149,7 @@ export class CompletionProvider implements InlineCompletionItemProvider {
       max_tokens: this._config.get('maxTokens'),
       num_return_sequences: this._config.get('numReturnSequences'),
       temperature: this._config.get('temperature'),
-      one_line: this._config.get('oneLine'),
+      one_line: one_line_flag as boolean,
       top_p: this._config.get('topP'),
       top_k: this._config.get('topK'),
       repetition_penalty: this._config.get('repetitionPenalty')
@@ -229,22 +241,54 @@ export class CompletionProvider implements InlineCompletionItemProvider {
     if (!editor) return []
     return (
       completionResponse.choices?.map((choice) => {
-        if (position.character === 0) {
-          return new InlineCompletionItem(
-            choice.text as string,
-            new Range(position, position)
+        if (position.character !== 0) {
+          const charBeforeRange = new Range(
+            position.translate(0, -1),
+            editor.selection.start
           )
+          const charBefore = document.getText(charBeforeRange)
+          if (choice.text === ' ' && charBefore === ' ') {
+            choice.text = choice.text.slice(1, choice.text.length)
+          }
+        }
+        
+        // get text after cursor
+        const textAfterCursor = document.getText(
+          new Range(position.line, position.character, position.line, Number.MAX_SAFE_INTEGER)
+        )
+        
+        if (textAfterCursor && textAfterCursor !== '') {
+          // remove all text from choice.text that appears after textAfterCursor
+          choice.text = choice.text?.split(textAfterCursor)[0]
         }
 
-        const charBeforeRange = new Range(
-          position.translate(0, -1),
-          editor.selection.start
-        )
-
-        const charBefore = document.getText(charBeforeRange)
-
-        if (choice.text === ' ' && charBefore === ' ') {
-          choice.text = choice.text.slice(1, choice.text.length)
+        // if multiple line mode, stop at the value of next line
+        if (!this._config.get('oneLine')) {
+          const next_row_in_editor = document.getText(
+            new Range(position.line + 1, 0, position.line + 1, Number.MAX_SAFE_INTEGER)
+          )
+          const next_row_in_editor_trim = next_row_in_editor?.trim()
+          if (next_row_in_editor_trim !== '') {
+            let line_spliter = '\n'
+            if (choice.text?.includes('\r\n')) line_spliter = '\r\n'
+            const std_text = choice.text?.replace('\r\n', '\n')
+            const choice_rows = std_text?.split('\n')
+            if (choice_rows) {
+              const match_index = choice_rows?.findIndex(row => row.trim() === next_row_in_editor_trim)
+              if (match_index !== -1) {
+                // join lines before match index
+                choice.text = choice_rows.slice(0, match_index).join(line_spliter)
+              }
+            }
+          }
+        }
+        
+        if (this._removeDoubleNewline) {
+          // remove all text after double newline
+          const doubleNewlineIndex = choice.text?.search(/(\r*\n[ \t]*){2}/)
+          if (doubleNewlineIndex !== -1) {
+            choice.text = choice.text?.slice(0, doubleNewlineIndex)
+          }
         }
 
         return new InlineCompletionItem(
@@ -263,6 +307,7 @@ export class CompletionProvider implements InlineCompletionItemProvider {
     this._engine = this._config.get('engine')
     this._usePreviousContext = this._config.get('_usePreviousContext')
     this._triggerWhenEditingLine = this._config.get('triggerWhenEditingLine')
+    this._removeDoubleNewline = this._config.get('removeDoubleNewline')
 
     this._basePath = `${this._serverPath}/${this._engine}`
     this._openai = new OpenAIApi(this._openaiConfig, this._basePath)
